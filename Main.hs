@@ -1,0 +1,123 @@
+module Main where
+
+import Data.Maybe (fromJust)
+import qualified Data.List as L
+
+data Term a = Empty
+            | Singleton (Term a)
+            | Union (Term a) (Term a)
+            | Intersection (Term a) (Term a)
+            | Var a
+            deriving Show
+
+data Pred a = Elem (Term a) (Term a)
+            | Subset (Term a) (Term a)
+            | And (Pred a) (Pred a)
+            | Or (Pred a) (Pred a)
+            | Not (Pred a)
+            | Implies (Pred a) (Pred a)
+            deriving Show
+
+newtype Set = S [Set]
+  deriving Show
+
+-- Equality instance for sets
+instance Eq Set where
+  (==) (S s1) (S s2) = equal (S $ L.nub s1) (S $ L.nub s2)
+
+equal :: Set -> Set -> Bool
+equal (S[]) (S [])      = True
+equal (S[]) (S(_:_))    = False
+equal (S (_:_)) (S [])  = False
+equal (S (x:xs)) (S x2) | x `elem` x2 = equal (S xs) (S $ L.delete x x2)
+                        | otherwise = False
+
+-- Performs a map on each 1st-level set and returns the result wrapped in a set
+liftS2 :: ([Set] -> [Set] -> [Set]) -> Set -> Set -> Set
+liftS2 f (S a) (S b) = S $ f a b
+
+-- Finds a set corresponding to a var if it exists, if not this function invokes error
+envLookup :: Eq v => (v -> Bool) -> Env v Set -> Set
+envLookup pred env = snd $ fromJust ms
+  where ms = L.find (pred . fst) env
+
+-- Performs the union operation on two sets and returns the result
+union :: Set -> Set -> Set
+union = liftS2 L.union
+
+-- Performs the intersection operation on two sets and returns the result
+intersect :: Set -> Set -> Set
+intersect = liftS2 L.intersect
+
+-- Evaluates a term tree recursively, and returns a set
+eval :: Eq v => Env v Set -> Term v -> Set
+eval env Empty              = S []
+eval env (Singleton x)      = S [eval env x]
+eval env (Var x)            = envLookup (== x) env
+eval env (Union x y)        = eval env x `union` eval env y
+eval env (Intersection x y) = eval env x `intersect` eval env y
+
+-- a ∈ S
+setElem :: Set -> Set -> Bool
+setElem s1 (S xs) = s1 `elem` xs
+
+-- isSubset a b = a ⊆ b
+isSubset :: Set -> Set -> Bool
+isSubset (S t1) t2 = and [t `setElem` t2 | t <- t1]
+
+-- implies a b = a => b
+implies :: Bool -> Bool -> Bool
+implies True x = x
+implies False _ = True
+
+-- Evaluates a predicate
+check :: Eq v => Env v Set -> Pred v -> Bool
+check env (Elem p1 p2) = eval env p1 `setElem` eval env p2
+check env (Subset p1 p2) = eval env p1 `isSubset` eval env p2
+check env (And p1 p2) = check env p1 && check env p2
+check env (Or p1 p2) = check env p1 || check env p2
+check env (Not p) = not $ check env p
+check env (Implies p1 p2) = check env p1 `implies` check env p2
+
+type Env var dom = [(var, dom)]
+
+-- Produces a vonNeuman set corresponding to a natural number
+vonNeumann :: Int -> Term a
+vonNeumann n | n == 0     = Empty
+             | n < 0      = error "vonNeumann sets only work on natural numbers"
+             | otherwise  = Union prev $ Singleton prev
+  where
+    prev = vonNeumann $ n - 1
+
+-- Sample environment
+env = [] :: Env () Set
+
+-- claim₁: n₁ ≤ n₂ => n₁ ⊆ n₂
+claim1 :: Int -> Int -> Bool
+claim1 n1 n2 = (n1 <= n2) `implies` check env (Subset s1 s2)
+  where
+    s1 = vonNeumann n1
+    s2 = vonNeumann n2
+
+-- claim₂ : n = {0, 1, ..., n - 1}
+claim2 :: Int -> Bool
+claim2 n = check env $ vonNeumann n `equals` ns
+  where
+    equals a b = And (Subset a b) (Subset b a)
+    ns = foldr (Union . Singleton . vonNeumann) Empty [0..(n - 1)]
+
+-- Tests the claims
+testClaims :: IO ()
+testClaims = do
+  -- Tests n₁ ≤ n₂ (should eval to true)
+  print $ and (zipWith claim1 [0..5] [5..10])
+
+  -- Tests n₁ > n₂ (should also eval to true due to the implication)
+  print $ and (zipWith claim1 [10..20] [0..10])
+
+  -- Tests the second claim with a reasonable length (should eval to true)
+  print $ all claim2 [0..7]
+
+-- Run tests
+main :: IO ()
+main = testClaims
